@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+pydantic-settings
+loguru
+alembic
+psycopg2-binary
+openai
+google-generativeai
+tenacity
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+ollama
+groq
