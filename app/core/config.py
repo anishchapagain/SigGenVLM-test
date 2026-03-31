@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # DB
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/gensigllm"
+    DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/sig_verification_llm"
     
     # Security
     SECRET_KEY: str = "change_me_in_production"

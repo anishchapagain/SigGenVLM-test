@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List
 
 class VerificationResult(BaseModel):
@@ -17,8 +17,7 @@ class ClientResponse(BaseModel):
     is_active: bool
     api_key: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class APIResponse(BaseModel):
     transaction_reference: str
