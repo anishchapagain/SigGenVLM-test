@@ -5,7 +5,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Signature Verification API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
-    
+    PROJECT_DESCRIPTION: str = "AI based signature verification system API."
+
     # DB
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/sig_verification_llm"
     
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    GROQ_API_KEY: str = ""
+    GROQ_API_KEY: str = "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"
 
     OPENAI_MODEL_NAME: str = "gpt-4o"
     GEMINI_MODEL_NAME: str = "gemini-1.5-pro-latest"

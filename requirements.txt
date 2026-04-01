@@ -7,7 +7,7 @@ loguru
 alembic
 psycopg2-binary
 openai
-google-generativeai
+google-genai
 tenacity
 python-multipart
 python-jose[cryptography]

@@ -3,7 +3,8 @@ import base64
 from fastapi import UploadFile
 from openai import AsyncOpenAI
 from openai import APIError, APITimeoutError
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import ollama
 from groq import AsyncGroq, RateLimitError
 import re
@@ -13,10 +14,11 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.schemas.payload import VerificationResult
 
-oai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-genai.configure(api_key=settings.GEMINI_API_KEY)
-ollama_client = ollama.AsyncClient(host=settings.OLLAMA_BASE_URL)
-groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+oai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+# Initialize conditionally to prevent ValueError if API key is not set
+gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY) if settings.GEMINI_API_KEY else None
+groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY) if settings.GROQ_API_KEY else None
+ollama_client = ollama.AsyncClient(host=settings.OLLAMA_BASE_URL) if settings.OLLAMA_BASE_URL else None
 
 async def encode_image(file: UploadFile) -> str:
     file.file.seek(0)
@@ -30,7 +32,7 @@ async def encode_image(file: UploadFile) -> str:
     reraise=True
 )
 async def call_openai(genuine_b64: str, questioned_b64: str) -> str:
-    logger.info(f"Calling OpenAI ({settings.OPENAI_MODEL_NAME}) for signature verification.")
+    logger.info("Calling Cloud AI Provider for signature verification.")
     response = await oai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_NAME,
         messages=[
@@ -55,23 +57,29 @@ async def call_openai(genuine_b64: str, questioned_b64: str) -> str:
     return response.choices[0].message.content
 
 async def call_gemini(genuine_b64: str, questioned_b64: str) -> str:
-    logger.info(f"Calling Google Gemini ({settings.GEMINI_MODEL_NAME}).")
-    model = genai.GenerativeModel(settings.GEMINI_MODEL_NAME, generation_config={"response_mime_type": "application/json"})
+    if not gemini_client:
+        raise ValueError("Global AI Provider API key is not configured. Please set GLOBAL_AI_PROVIDER_API_KEY.")
+        
+    logger.info("Calling Global AI Provider.")
     
     gen_bytes = base64.b64decode(genuine_b64)
     quest_bytes = base64.b64decode(questioned_b64)
     
     parts = [
         settings.FORENSIC_PROMPT,
-        {"mime_type": "image/jpeg", "data": gen_bytes},
-        {"mime_type": "image/jpeg", "data": quest_bytes}
+        types.Part.from_bytes(data=gen_bytes, mime_type="image/jpeg"),
+        types.Part.from_bytes(data=quest_bytes, mime_type="image/jpeg")
     ]
     
-    response = await model.generate_content_async(parts)
+    response = await gemini_client.aio.models.generate_content(
+        model=settings.GEMINI_MODEL_NAME,
+        contents=parts,
+        config=types.GenerateContentConfig(response_mime_type="application/json")
+    )
     return response.text
 
 async def call_ollama(genuine_b64: str, questioned_b64: str) -> str:
-    logger.info(f"Calling local Ollama ({settings.OLLAMA_MODEL_NAME}) for signature verification.")
+    logger.info("Calling Local AI Provider for signature verification.")
     
     gen_bytes = base64.b64decode(genuine_b64)
     quest_bytes = base64.b64decode(questioned_b64)
@@ -90,7 +98,7 @@ async def call_ollama(genuine_b64: str, questioned_b64: str) -> str:
     return response.get("message", {}).get("content", "")
 
 async def call_groq(genuine_b64: str, questioned_b64: str) -> str:
-    logger.info(f"Calling Groq ({settings.GROQ_MODEL_NAME}) for fast verification.")
+    logger.info("Calling Cloud AI Provider for fast verification.")
     response = await groq_client.chat.completions.with_raw_response.create(
         model=settings.GROQ_MODEL_NAME,
         messages=[
@@ -116,12 +124,12 @@ async def call_groq(genuine_b64: str, questioned_b64: str) -> str:
     rem_tokens = headers.get('x-ratelimit-remaining-tokens', 'Unknown')
     rem_reqs = headers.get('x-ratelimit-remaining-requests', 'Unknown')
     reset_time = headers.get('x-ratelimit-reset-tokens', 'Unknown')
-    logger.info(f"[Groq Telemetry] Tokens Left: {rem_tokens} | Reqs Left: {rem_reqs} | Reset In: {reset_time}")
+    logger.info(f"[AI Telemetry] Tokens Left: {rem_tokens} | Reqs Left: {rem_reqs} | Reset In: {reset_time}")
     
     completion = response.parse()
     usage = completion.usage
     if usage:
-        logger.info(f"[Groq Usage] Prompt: {usage.prompt_tokens} | Completion: {usage.completion_tokens} | Total: {usage.total_tokens}")
+        logger.info(f"[AI Usage] Prompt: {usage.prompt_tokens} | Completion: {usage.completion_tokens} | Total: {usage.total_tokens}")
         
     return completion.choices[0].message.content
 
@@ -135,24 +143,29 @@ async def verify_signatures(genuine_file: UploadFile, questioned_file: UploadFil
     if provider == "ollama":
         # Enforce local isolation: No cloud fallback
         try:
+            logger.info("Calling Local AI Provider for signature verification.")
             result_str = await call_ollama(genuine_b64, questioned_b64)
         except Exception as e:
-            logger.error(f"Local Ollama {settings.OLLAMA_MODEL_NAME} failed: {str(e)}. Cloud fallback disabled.")
+            logger.error(f"Local AI Provider failed: {str(e)}. Cloud fallback disabled.")
             raise Exception(f"Local Ollama Request Failed: {str(e)}")
     else:
         try:
-            if settings.PRIMARY_LLM_PROVIDER == "groq":
+            logger.debug(f"Routing request to provider: {provider}")
+            if provider == "groq":
+                logger.info("Calling AI Provider for fast verification.")
                 result_str = await call_groq(genuine_b64, questioned_b64)
-            elif settings.PRIMARY_LLM_PROVIDER == "openai":
+            elif provider == "openai":
+                logger.info("Calling AI Provider for signature verification.")
                 result_str = await call_openai(genuine_b64, questioned_b64)
             else:
+                logger.info("Calling AI Provider.")
                 result_str = await call_gemini(genuine_b64, questioned_b64)
         except Exception as e:
             # specifically log RateLimitErrors brightly if using Groq
             if isinstance(e, RateLimitError):
-                logger.warning(f"Groq Playground Rate Limit Exhausted! Halting local run and triggering fallback: {str(e)}")
+                logger.warning(f"Cloud AI Playground Rate Limit Exhausted! Halting local run and triggering fallback: {str(e)}")
             else:
-                logger.error(f"Primary provider {settings.PRIMARY_LLM_PROVIDER} failed: {str(e)}.")
+                logger.error(f"Primary provider failed: {str(e)}.")
                 
             fallback_e = e
             try:

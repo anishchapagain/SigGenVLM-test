@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Generative AI forensic signature verification system API."
+    description=settings.PROJECT_DESCRIPTION
 )
 
 app.add_middleware(
@@ -27,8 +27,9 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting GenSigLLM API Server.")
+    logger.info(f"Starting {settings.PROJECT_NAME} - Server.")
 
 @app.get("/health", tags=["Health"])
 def health_check():
+    logger.info("Health check requested.")
     return {"status": "ok", "service": settings.PROJECT_NAME}

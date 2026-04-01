@@ -20,6 +20,7 @@ router = APIRouter()
 
 def _log_transaction(db: Session, client_id: int, transaction_ref: str, score: float, verdict: str, processing_time_ms: int, fallback_exception: Exception):
     try:
+        logger.debug(f"Persisting verification log for ref {transaction_ref}...")
         db_log = VerificationLog(
             client_id=client_id,
             transaction_reference=transaction_ref,
@@ -32,15 +33,18 @@ def _log_transaction(db: Session, client_id: int, transaction_ref: str, score: f
         db.flush()
         
         if fallback_exception:
+            logger.info(f"Fallback behavior utilized. Persisting ErrorTelemetry for ref {transaction_ref}.")
             telemetry = ErrorTelemetry(
                 log_id=db_log.id,
-                provider_used=settings.PRIMARY_LLM_PROVIDER,
+                # Masking the cloud provider in DB log (just in case they queried the DB logs)
+                provider_used="Cloud AI Server",
                 error_type=type(fallback_exception).__name__,
                 stack_trace=str(fallback_exception)
             )
             db.add(telemetry)
             
         db.commit()
+        logger.debug(f"DB Log persisted successfully for ref {transaction_ref}")
     except SQLAlchemyError as db_err:
         db.rollback()
         logger.error(f"Non-fatal Database Error for ref {transaction_ref}: {str(db_err)}. Proceeding with payload delivery.")
@@ -60,9 +64,11 @@ async def verify_signature_endpoint(
     validate_image(questioned_image)
     
     try:
+        logger.debug(f"Routing request {transaction_ref} to AI inference engine...")
         verification_result, provider_used, fallback_exception = await verify_signatures(
             genuine_image, questioned_image
         )
+        logger.debug(f"Inference completed for {transaction_ref}.")
     except Exception as e:
         logger.error(f"Fatal verification error for ref {transaction_ref}: {str(e)}")
         raise HTTPException(
@@ -79,7 +85,8 @@ async def verify_signature_endpoint(
         processing_time_ms, fallback_exception
     )
         
-    logger.info(f"Complete | Ref: {transaction_ref} | Time: {processing_time_ms}ms | Provider: {provider_used}")
+    provider_type = 'Local AI' if provider_used == 'ollama' else 'API AI - Server'
+    logger.info(f"Complete | Ref: {transaction_ref} | Time: {processing_time_ms}ms | Provider: {provider_type}")
     
     return APIResponse(
         transaction_reference=transaction_ref,
@@ -93,6 +100,7 @@ def create_client(client_in: ClientCreate, db: Session = Depends(get_db)):
     raw_api_key = secrets.token_urlsafe(32)
     hashed_key = hash_api_key(raw_api_key)
     
+    logger.info(f"Creating new internal client under organization '{client_in.organization_name}'...")
     db_client = Client(
         api_key_hash=hashed_key,
         organization_name=client_in.organization_name,
@@ -101,6 +109,7 @@ def create_client(client_in: ClientCreate, db: Session = Depends(get_db)):
     db.add(db_client)
     db.commit()
     db.refresh(db_client)
+    logger.info(f"Client {db_client.id} created successfully.")
     
     return ClientResponse(
         id=db_client.id,
