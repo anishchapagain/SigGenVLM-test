@@ -10,25 +10,30 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/sig_verification_llm"
     
     # Security
-    SECRET_KEY: str = "change_me_in_production"
+    SECRET_KEY: str = "change_me_in_production" # Production should use a strong random key
     
     # Validation
     MAX_IMAGE_SIZE_MB: int = 5
     MIN_IMAGE_SIZE_KB: int = 10
-    ALLOWED_IMAGE_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"]
+    ALLOWED_IMAGE_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"] 
     
     # AI Config
     # PRIMARY_LLM_PROVIDER: str = "openai"
-    PRIMARY_LLM_PROVIDER: str = "ollama"
-    # PRIMARY_LLM_PROVIDER: str = "groq"
+    # PRIMARY_LLM_PROVIDER: str = "ollama"
+    
+    PRIMARY_LLM_PROVIDER: str = "groq"
+
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
+
     OPENAI_MODEL_NAME: str = "gpt-4o"
     GEMINI_MODEL_NAME: str = "gemini-1.5-pro-latest"
     OLLAMA_MODEL_NAME: str = "qwen2.5-vl"
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    GROQ_API_KEY: str = ""
     GROQ_MODEL_NAME: str = "llama-3.2-11b-vision-preview"
+    
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    
     LLM_TIMEOUT_SECONDS: int = 30
     FALLBACK_RETRY_ATTEMPTS: int = 2
     CHARACTERISTICS_FORMAT: str = "verbose" # succinct or verbose
