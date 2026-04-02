@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    GROQ_API_KEY: str = "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"
+    GROQ_API_KEY: str = ""
 
     OPENAI_MODEL_NAME: str = "gpt-4o"
     GEMINI_MODEL_NAME: str = "gemini-1.5-pro-latest"
