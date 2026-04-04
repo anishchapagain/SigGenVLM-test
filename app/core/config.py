@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     
     LLM_TIMEOUT_SECONDS: int = 30
     FALLBACK_RETRY_ATTEMPTS: int = 2
-    CHARACTERISTICS_FORMAT: str = "verbose" # succinct or verbose
+    CHARACTERISTICS_FORMAT: str = "succinct" # succinct or verbose
     
     FORENSIC_PROMPT: str = """
 You are an expert forensic document examiner specializing in signature verification for the financial sector. 
