@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Signature Verification API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+
     PROJECT_DESCRIPTION: str = "AI based signature verification system API."
 
     # DB
@@ -16,12 +17,32 @@ class Settings(BaseSettings):
     # Validation
     MAX_IMAGE_SIZE_MB: int = 5
     MIN_IMAGE_SIZE_KB: int = 2
+
     ALLOWED_IMAGE_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"] 
     
+    FORENSIC_PROMPT: str = """
+    You are an expert forensic document examiner specializing in signature verification for the financial sector. 
+    Analyze the two provided signatures: Image 1 is the Genuine reference, Image 2 is the Questioned signature.
+
+    Follow strict forensic evaluation criteria:
+    1. Letter Structure: alignment and baseline deviation.
+    2. Line Quality: natural flow vs labored drawing.
+    3. Slant & Proportion: ratio and angular consistency.
+    4. Terminal Strokes: tapered endpoints vs blunt stops.
+    5. Execution Velocity: rapid habitual vs slow calculated.
+
+    Provide the exact JSON response and nothing else:
+    {
+    "verdict": "Genuine" or "Forgery",
+    "score": <0-100 float>,
+    "characteristics": ["analysis point 1", "analysis point 2", ...]
+    }
+    """
 
     # AI Config
     # PRIMARY_LLM_PROVIDER: str = "openai"
     # PRIMARY_LLM_PROVIDER: str = "ollama"
+
     LOCAL_LLM_PROVIDER: str = "openai"
     PRIMARY_LLM_PROVIDER: str = "openai"
 
@@ -39,25 +60,6 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 30
     FALLBACK_RETRY_ATTEMPTS: int = 2
     CHARACTERISTICS_FORMAT: str = "succinct" # succinct or verbose
-    
-    FORENSIC_PROMPT: str = """
-You are an expert forensic document examiner specializing in signature verification for the financial sector. 
-Analyze the two provided signatures: Image 1 is the Genuine reference, Image 2 is the Questioned signature.
-
-Follow strict forensic evaluation criteria:
-1. Letter Structure: alignment and baseline deviation.
-2. Line Quality: natural flow vs labored drawing.
-3. Slant & Proportion: ratio and angular consistency.
-4. Terminal Strokes: tapered endpoints vs blunt stops.
-5. Execution Velocity: rapid habitual vs slow calculated.
-
-Provide the exact JSON response and nothing else:
-{
-  "verdict": "Genuine" or "Forgery",
-  "score": <0-100 float>,
-  "characteristics": ["analysis point 1", "analysis point 2", ...]
-}
-"""
 
     class Config:
         env_file = ".env"

@@ -228,6 +228,20 @@ def encode_to_data_url(file_bytes: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{b64}"
 
 
+def sanitize_usage_for_response(usage: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Hides token counters from API responses for LocalLLM provider.
+    Internal logs can still retain full usage details.
+    """
+    sanitized = dict(usage)
+    provider = str(sanitized.get("provider", "")).lower()
+    if provider == "localllm":
+        sanitized.pop("input_tokens", None)
+        sanitized.pop("output_tokens", None)
+        sanitized.pop("total_tokens", None)
+    return sanitized
+
+
 def build_user_prompt_a() -> str:
     """
     Builds the structured user prompt for forensic comparison.
@@ -481,9 +495,9 @@ def analyze_signatures(
         except Exception as e:
             last_error = e
             if attempt < attempts - 1:
-                time.sleep(4 ** attempt)  # brief exponential back-off
+                time.sleep(5 ** attempt)  # brief exponential back-off
             continue
-        time.sleep(1.5 ** attempt)
+        time.sleep(2 ** attempt) # take time for retry
     raise last_error
 
 
@@ -499,6 +513,7 @@ def log_analysis(data: Dict[str, Any]):
     Appends a structured JSONL log entry.
     In production, replace with database (PostgreSQL / MongoDB).
     """
+    
     entry = {
         "timestamp": datetime.now().isoformat(),
         **data,
@@ -543,7 +558,12 @@ def health_check():
     }
 
 
-@app.post("/verify-signature", response_model=AnalysisResponse, tags=["Verification"])
+@app.post(
+    "/verify-signature",
+    response_model=AnalysisResponse,
+    response_model_exclude_none=True,
+    tags=["Verification"],
+)
 async def verify_signature(
     request: Request,
     reference_signature: UploadFile = File(..., description="Reference (known authentic) signature image — PNG or JPEG"),
@@ -557,18 +577,25 @@ async def verify_signature(
     **Forensic Signature Verification**
 
     Upload two signature images:
-    - `reference_signature`: The known-authentic baseline.
-    - `questioned_signature`: The signature to be verified.
+    - `reference_signature`: The known-authentic baseline. Image-b64-encoded bytes + Preprocessed.
+    - `questioned_signature`: The signature to be verified. Image-b64-encoded bytes + Preprocessed.
+
 
     Returns a forensic verdict (`Genuine` / `Forged` / `Inconclusive`),
     a confidence score (0–100), and detailed characteristics.
 
-    - score: 0-100 (Confidence Score) about the verdict.
+    - score: 0-100 (Confidence Score: Low / High certainty) about the verdict.
+    - - - Genuine + Score > 85: Strong evidence both signatures are from the same person.
+    - - - Genuine + Score <= 85: Strong evidence both signatures are from the same person. (Human In The Loop)
+    - - - Forged + Score > 75: Clear evidence of forgery, simulation, or different writer. (Human In The Loop)
+    - - - Inconclusive + Score: Clean evidence of inconclusive. (Human In The Loop)
+
     - characteristics: List of characteristics that were analyzed.
 
     Example:
+    ```
     {
-        "verdict": "Genuine",
+        "verdict": "Genuine | Forged | Inconclusive",
         "score": 95.0,
         "characteristics": [
             "Letter Structure: alignment and baseline deviation.",
@@ -578,12 +605,14 @@ async def verify_signature(
             "Execution Velocity: rapid habitual vs slow calculated.",
         ],
     }
+    ```
     """
     try:
         # --- Read files ---
         ref_bytes = await reference_signature.read()
         quest_bytes = await questioned_signature.read()
         print("Reading Image files...")
+
         # --- Validate sizes ---
         validate_image_size(ref_bytes, reference_signature.filename or "reference")
         validate_image_size(quest_bytes, questioned_signature.filename or "questioned")
@@ -620,9 +649,10 @@ async def verify_signature(
         })
         print("--F--")
 
+        response_usage = sanitize_usage_for_response(usage)
         return AnalysisResponse(
             result=SignatureAnalysisResult(**result),
-            usage=UsageMetrics(**usage),
+            usage=UsageMetrics(**response_usage),
             timestamp=datetime.now().isoformat(),
         )
 
