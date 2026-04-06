@@ -2,26 +2,9 @@ from fastapi import UploadFile, HTTPException, status
 from app.core.config import settings
 from app.core.logger import logger
 
-def get_models():
-    if settings.PRIMARY_LLM_PROVIDER == "openai":
-        client_api = OpenAI(api_key=settings.OPENAI_API_KEY)
-        local_model = settings.OPENAI_MODEL_NAME
-    elif settings.PRIMARY_LLM_PROVIDER == "groq":
-        client_api = Groq(api_key=settings.GROQ_API_KEY)
-        local_model = settings.GROQ_MODEL_NAME
-    elif settings.PRIMARY_LLM_PROVIDER == "ollama":
-        client_api = Ollama(api_key=settings.OLLAMA_API_KEY)
-        local_model = settings.OLLAMA_MODEL_NAME
-    else:
-        return "unknown"    
-
 def get_provider():
     if settings.PRIMARY_LLM_PROVIDER == "openai":
         return "LocalLLM"
-    elif settings.PRIMARY_LLM_PROVIDER == "groq":
-        return "groq"
-    elif settings.PRIMARY_LLM_PROVIDER == "ollama":
-        return "ollama"
     else:
         return "unknown"
 

@@ -15,14 +15,15 @@ class Settings(BaseSettings):
     
     # Validation
     MAX_IMAGE_SIZE_MB: int = 5
-    MIN_IMAGE_SIZE_KB: int = 10
+    MIN_IMAGE_SIZE_KB: int = 2
     ALLOWED_IMAGE_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"] 
     
+
     # AI Config
     # PRIMARY_LLM_PROVIDER: str = "openai"
     # PRIMARY_LLM_PROVIDER: str = "ollama"
-    
-    PRIMARY_LLM_PROVIDER: str = "groq"
+    LOCAL_LLM_PROVIDER: str = "openai"
+    PRIMARY_LLM_PROVIDER: str = "openai"
 
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""

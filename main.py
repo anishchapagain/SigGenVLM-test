@@ -9,6 +9,8 @@ Run: uvicorn main:app --reload
 """
 
 # Load .env FIRST — before any library reads environment variables
+from operator import contains
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -29,7 +31,7 @@ from datetime import datetime
 # -----------------------------
 # Import the project's settings object (reads from .env automatically)
 from app.core.config import settings
-from app.core.utils import get_provider, get_models
+from app.core.utils import get_provider
 
 # -----------------------------
 # Provider Client Imports
@@ -39,18 +41,6 @@ try:
     localllm_available = True
 except ImportError:
     localllm_available = False
-
-try:
-    from google import genai as google_genai
-    _gemini_available = True
-except ImportError:
-    _gemini_available = False
-
-try:
-    from groq import Groq
-    _groq_available = True
-except ImportError:
-    _groq_available = False
 
 try:
     import ollama as ollama_client
@@ -83,7 +73,7 @@ app.add_middleware(
 # Forensic System Prompt
 # -----------------------------
 
-FORENSIC_SYSTEM_PROMPT = """You are an expert forensic document examiner with over 20 years of experience \
+FORENSIC_SYSTEM_PROMPT_1 = """You are an expert forensic document examiner with over 20 years of experience \
 in signature analysis and handwriting verification. Your role is to analyze signatures with the precision \
 and methodology used in legal and investigative contexts.
 
@@ -105,6 +95,34 @@ When analyzing signatures, you evaluate:
 
 Your analysis must be objective, methodical, and based on established forensic principles."""
 
+FORENSIC_SYSTEM_PROMPT = """You are an expert forensic document examiner specializing in signature verification.
+
+You compare one REFERENCE signature and one QUESTIONED signature using forensic principles:
+- structural consistency
+- stroke quality and rhythm
+- pressure and line quality
+- terminal/entry strokes
+- unique identifiers and forgery indicators
+
+Rules:
+1. Be objective and conservative. If evidence is insufficient or contradictory, use "Inconclusive".
+2. Do not invent details not visible in the images.
+3. Return exactly one valid JSON object (RFC 8259).
+4. No markdown, no code fences, no explanation text, no extra keys.
+
+Required JSON schema:
+{
+  "verdict": "Genuine" | "Forged" | "Inconclusive",
+  "score": integer 0-100,
+  "characteristics": [string, string, string, string, string]
+}
+
+Output constraints:
+- "characteristics" must contain exactly 5 items.
+- Each characteristic should be concise (6-14 words), forensic, and image-grounded.
+- "score" must be an integer (not float, not string).
+- Final output must be parseable JSON only."""
+
 # -----------------------------
 # Pydantic Response Models
 # -----------------------------
@@ -121,8 +139,8 @@ class UsageMetrics(BaseModel):
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
-    latency_sec: float
-    model: str
+    latency_sec: float = 0.0
+    model: str = "LocalLLM"
 
 class AnalysisResponse(BaseModel):
     """Full API response envelope"""
@@ -134,13 +152,33 @@ class AnalysisResponse(BaseModel):
 # -----------------------------
 # Utility Functions
 # -----------------------------
+def get_models():
+    """
+    Returns a tuple (client_api, model_name) for the configured provider.
+    Raises RuntimeError if the provider is not properly configured.
+    """
+    if settings.PRIMARY_LLM_PROVIDER == "ollama":
+        client_api = ollama_client
+        local_model = settings.OLLAMA_MODEL_NAME
+    elif settings.PRIMARY_LLM_PROVIDER == "openai":
+        # OpenAI client is already imported as OpenAI when available
+        client_api = OpenAI(api_key=settings.OPENAI_API_KEY)
+        local_model = settings.OPENAI_MODEL_NAME
+    else:
+        raise RuntimeError(
+            f"Unsupported or unconfigured provider: {settings.PRIMARY_LLM_PROVIDER}"
+        )
+    print("Loading ..")
+    return client_api, local_model
 
 def fix_provider(provider: str) -> str:
     """Fixes the provider name to the correct format."""
-    provider = provider.lower()
+    provider = (provider or "").lower()
+    # Map the localllm alias to the internal openai-based implementation
     if provider == "localllm":
         return "openai"
     return provider
+
 
 def validate_image_bytes(file_bytes: bytes) -> str:
     """
@@ -190,15 +228,15 @@ def encode_to_data_url(file_bytes: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{b64}"
 
 
-def build_user_prompt() -> str:
+def build_user_prompt_a() -> str:
     """
     Builds the structured user prompt for forensic comparison.
     Uses settings.CHARACTERISTICS_FORMAT to adjust verbosity.
     """
     verbosity_note = (
         "Each characteristic must be a detailed, technical sentence."
-        if settings.CHARACTERISTICS_FORMAT == "verbose"
-        else "Keep each characteristic concise (under 10 words), technical sentence."
+        if settings.CHARACTERISTICS_FORMAT == "succinct"
+        else "Keep each characteristic concise (under 10 words), with human like sentences."
     )
 
     return f"""Compare these two signatures as a forensic document examiner.
@@ -209,23 +247,22 @@ The SECOND image is the QUESTIONED signature (to be verified).
 Perform a comprehensive forensic analysis and provide your findings in VALID JSON format ONLY.
 Do not include markdown formatting, code blocks, or any text outside the JSON object.
 
-Your response must be a single JSON object with this exact structure:
+Output **ONLY** a single JSON object with this exact schema:
 {{
-  "verdict": "Genuine" or "Forged" or "Inconclusive",
-  "score": <confidence score 0-100, float>,
+  "verdict": "Genuine" | "Forged",
+  "score": <confidence score 0-100, integer>,
   "characteristics": [
-    "<forensic observation 1>",
-    "<forensic observation 2>",
-    "<forensic observation 3>",
-    "<forensic observation 4>",
-    "<forensic observation 5>"
+    "<observation 1, 5-10 words>",
+    "<observation 2, 5-10 words>",
+    "<observation 3, 5-10 words>",
+    "<observation 4, 5-10 words>",
+    "<observation 5, 5-10 words>"
   ]
 }}
 
 VERDICT GUIDELINES:
 - "Genuine": Strong evidence both signatures are from the same person
 - "Forged": Clear evidence of forgery, simulation, or different writer
-- "Inconclusive": Insufficient distinctive features or conflicting evidence
 
 SCORE GUIDELINES (0-100):
 - 90-100: Extremely high confidence
@@ -237,12 +274,51 @@ CHARACTERISTICS (5 observations, one per forensic dimension):
 1. Structural alignment and proportions
 2. Writing flow and naturalness (speed/rhythm)
 3. Terminal strokes and endpoints
-4. Pressure patterns and line quality
+4. Pressure patterns, uniformity and line quality
 5. Unique identifiers or forgery indicators
 
 {verbosity_note}
 
 CRITICAL: Return ONLY the JSON object. No additional text."""
+
+def build_user_prompt() -> str:
+    verbosity_note = (
+        "Each characteristic should be technical and specific."
+        if settings.CHARACTERISTICS_FORMAT == "succinct"
+        else "Keep each characteristic short and clear."
+    )
+
+    return f"""Compare two signatures.
+
+Image 1 = REFERENCE (known authentic).
+Image 2 = QUESTIONED (to verify).
+
+Task:
+- Decide verdict: Genuine, Forged, or Inconclusive.
+- Provide confidence score as integer 0-100.
+- Provide exactly 5 forensic characteristics.
+
+Return ONLY this JSON object shape:
+{{
+  "verdict": "Genuine",
+  "score": 82,
+  "characteristics": [
+    "Baseline alignment remains consistent across major strokes",
+    "Line quality shows smooth rhythm without drawn hesitation",
+    "Terminal stroke tapering differs in final rightward sweep",
+    "Pressure transitions appear uneven in questioned downstrokes",
+    "Loop formation suggests simulated imitation, not natural habit"
+  ]
+}}
+
+Important:
+- The example values above are format guidance only; replace with your findings.
+- Use only one object.
+- No additional keys.
+- No markdown or surrounding text.
+- Ensure strict valid JSON before final answer.
+
+{verbosity_note}"""
 
 
 def parse_json_response(raw_text: str) -> Dict[str, Any]:
@@ -252,8 +328,9 @@ def parse_json_response(raw_text: str) -> Dict[str, Any]:
     """
     cleaned = raw_text.strip()
 
+    print(f"Raw response: {cleaned}")
+
     # Strip ```json ... ``` or ``` ... ```
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     cleaned = cleaned.strip()
 
@@ -291,12 +368,12 @@ def call_local_llm(image1_url: str, image2_url: str) -> Tuple[Dict[str, Any], Di
     """Calls LocalLLM Vision (Chat Completions) API."""
     if not localllm_available:
         raise RuntimeError("locallm package not installed.")
-    if not client:
-        raise RuntimeError("LocalLLM is not configured.")
-
+    
     client_api, local_model = get_models()
+    # print(local_model)
     if client_api is None:
-        raise RuntimeError("LocalLLM is not configured.")
+        raise RuntimeError("LocalLLM client could not be created.")
+
     start = time.time()
 
     response = client_api.chat.completions.create(
@@ -313,7 +390,7 @@ def call_local_llm(image1_url: str, image2_url: str) -> Tuple[Dict[str, Any], Di
             },
         ],
         temperature=0.1,
-        max_tokens=1024,
+        max_tokens=200,
         timeout=settings.LLM_TIMEOUT_SECONDS,
     )
 
@@ -326,113 +403,10 @@ def call_local_llm(image1_url: str, image2_url: str) -> Tuple[Dict[str, Any], Di
         "output_tokens": response.usage.completion_tokens if response.usage else None,
         "total_tokens": response.usage.total_tokens if response.usage else None,
         "latency_sec": latency,
-        # "model": model,
+        "model": "LocalLLM",
         "provider": get_provider(),
     }
     return result, usage
-
-
-# -----------------------------
-# Provider: Groq
-# -----------------------------
-
-def call_groq(image1_url: str, image2_url: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Calls Groq Vision API."""
-    if not _groq_available:
-        raise RuntimeError("groq package not installed.")
-    if not settings.GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not configured.")
-
-    client = Groq(api_key=settings.GROQ_API_KEY)
-    model = settings.GROQ_MODEL_NAME
-    start = time.time()
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": FORENSIC_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": build_user_prompt()},
-                    {"type": "image_url", "image_url": {"url": image1_url}},
-                    {"type": "image_url", "image_url": {"url": image2_url}},
-                ],
-            },
-        ],
-        temperature=0.1,
-        max_tokens=1024,
-    )
-
-    latency = round(time.time() - start, 3)
-    raw_text = response.choices[0].message.content
-    result = parse_json_response(raw_text)
-
-    usage = {
-        "input_tokens": response.usage.prompt_tokens if response.usage else None,
-        "output_tokens": response.usage.completion_tokens if response.usage else None,
-        "total_tokens": response.usage.total_tokens if response.usage else None,
-        "latency_sec": latency,
-        "model": model,
-        "provider": "groq",
-    }
-    return result, usage
-
-
-# -----------------------------
-# Provider: Google Gemini
-# -----------------------------
-
-def call_gemini(image1_bytes: bytes, image2_bytes: bytes,
-                mime1: str, mime2: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Calls Google Gemini Vision API using raw bytes."""
-    if not _gemini_available:
-        raise RuntimeError("google-genai package not installed.")
-    if not settings.GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY is not configured.")
-
-    client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
-    model = settings.GEMINI_MODEL_NAME
-    start = time.time()
-
-    img1_part = google_genai.types.Part.from_bytes(data=image1_bytes, mime_type=mime1)
-    img2_part = google_genai.types.Part.from_bytes(data=image2_bytes, mime_type=mime2)
-
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            google_genai.types.Content(
-                role="user",
-                parts=[
-                    google_genai.types.Part.from_text(
-                        FORENSIC_SYSTEM_PROMPT + "\n\n" + build_user_prompt()
-                    ),
-                    img1_part,
-                    img2_part,
-                ],
-            )
-        ],
-        config=google_genai.types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=1024,
-        ),
-    )
-
-    latency = round(time.time() - start, 3)
-    raw_text = response.text
-    result = parse_json_response(raw_text)
-
-    token_meta = response.usage_metadata if hasattr(response, "usage_metadata") else None
-    usage = {
-        "input_tokens": getattr(token_meta, "prompt_token_count", None),
-        "output_tokens": getattr(token_meta, "candidates_token_count", None),
-        "total_tokens": getattr(token_meta, "total_token_count", None),
-        "latency_sec": latency,
-        "model": model,
-        "provider": "gemini",
-    }
-    return result, usage
-
 
 # -----------------------------
 # Provider: Ollama (local)
@@ -466,7 +440,7 @@ def call_ollama(image1_bytes: bytes, image2_bytes: bytes) -> Tuple[Dict[str, Any
         "output_tokens": response.get("eval_count"),
         "total_tokens": None,
         "latency_sec": latency,
-        "model": model,
+        "model": "LocalLLM",
         "provider": "ollama",
     }
     return result, usage
@@ -497,14 +471,9 @@ def analyze_signatures(
 
     for attempt in range(attempts):
         try:
-            if active_provider == "openai":
+            if active_provider == settings.LOCAL_LLM_PROVIDER:
+                print("Ready for a call to LocalLLM...")
                 return call_local_llm(image1_url, image2_url)
-            # elif active_provider == "groq":
-            #     return call_groq(image1_url, image2_url)
-            # elif active_provider == "gemini":
-            #     return call_gemini(image1_bytes, image2_bytes, mime1, mime2)
-            elif active_provider == "ollama":
-                return call_ollama(image1_bytes, image2_bytes)
             else:
                 raise ValueError(
                     f"Unknown provider: detected {get_provider()}"
@@ -512,9 +481,9 @@ def analyze_signatures(
         except Exception as e:
             last_error = e
             if attempt < attempts - 1:
-                time.sleep(1.5 ** attempt)  # brief exponential back-off
+                time.sleep(4 ** attempt)  # brief exponential back-off
             continue
-
+        time.sleep(1.5 ** attempt)
     raise last_error
 
 
@@ -572,21 +541,6 @@ def health_check():
         "primary_provider": provider,
         "model": provider.upper(),
     }
-    # key_checks = {
-    #     "openai": bool(settings.OPENAI_API_KEY),
-    #     "gemini": bool(settings.GEMINI_API_KEY),
-    #     "groq": bool(settings.GROQ_API_KEY),
-    #     "ollama": True,  # local, no key needed
-    # }
-    # primary_ready = key_checks.get(provider, False)
-
-    # return {
-    #     "status": "healthy" if primary_ready else "degraded",
-    #     "timestamp": datetime.now().isoformat(),
-    #     "primary_provider": provider,
-    #     # "provider_keys_configured": key_checks,
-    #     "model": getattr(settings, f"{provider.upper()}_MODEL_NAME", "N/A"),
-    # }
 
 
 @app.post("/verify-signature", response_model=AnalysisResponse, tags=["Verification"])
@@ -608,41 +562,63 @@ async def verify_signature(
 
     Returns a forensic verdict (`Genuine` / `Forged` / `Inconclusive`),
     a confidence score (0–100), and detailed characteristics.
+
+    - score: 0-100 (Confidence Score) about the verdict.
+    - characteristics: List of characteristics that were analyzed.
+
+    Example:
+    {
+        "verdict": "Genuine",
+        "score": 95.0,
+        "characteristics": [
+            "Letter Structure: alignment and baseline deviation.",
+            "Line Quality: natural flow vs labored drawing.",
+            "Slant & Proportion: ratio and angular consistency.",
+            "Terminal Strokes: tapered endpoints vs blunt stops.",
+            "Execution Velocity: rapid habitual vs slow calculated.",
+        ],
+    }
     """
     try:
         # --- Read files ---
         ref_bytes = await reference_signature.read()
         quest_bytes = await questioned_signature.read()
-
+        print("Reading Image files...")
         # --- Validate sizes ---
         validate_image_size(ref_bytes, reference_signature.filename or "reference")
         validate_image_size(quest_bytes, questioned_signature.filename or "questioned")
+        print("Image files validated...")
 
         # --- Detect MIME types ---
         ref_mime = validate_image_bytes(ref_bytes)
         quest_mime = validate_image_bytes(quest_bytes)
+        print("Image files MIME types detected...")
 
         # --- Run AI analysis ---
         result, usage = analyze_signatures(
             ref_bytes, quest_bytes, ref_mime, quest_mime, provider
         )
+        print("AI analysis completed...")
 
         # --- Validate AI response ---
         validate_result_structure(result)
+        print("AI response validated...")
 
         # --- Log success ---
         log_analysis({
             "client_ip": request.client.host if request.client else "unknown",
             "endpoint": "/verify-signature",
             "provider": usage.get("provider"),
-            # "model": usage.get("model"),
+            "model": "LocalLLM",
             "verdict": result.get("verdict"),
             "score": result.get("score"),
             "reference_file": reference_signature.filename,
             "questioned_file": questioned_signature.filename,
+            "characteristics": result.get("characteristics"),
             "usage": usage,
             "status": "success",
         })
+        print("--F--")
 
         return AnalysisResponse(
             result=SignatureAnalysisResult(**result),
@@ -657,7 +633,7 @@ async def verify_signature(
             "error": str(ve),
             "status": "validation_error",
         })
-        raise HTTPException(status_code=400, detail=str(ve))
+        raise HTTPException(status_code=400, detail="Validation Failed.. Please try again")
 
     except Exception as e:
         log_analysis({
@@ -666,7 +642,7 @@ async def verify_signature(
             "error": str(e),
             "status": "failed",
         })
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Analysis failed: Please try again later.")
 
 
 @app.post("/verify-signature-batch", tags=["Verification"])
@@ -779,12 +755,12 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.on_event("startup")
 async def startup_event():
     """Logs startup configuration to console."""
-    provider = settings.PRIMARY_LLM_PROVIDER
-    model_attr = f"{provider.upper()}_MODEL_NAME"
-    model = getattr(settings, model_attr, "N/A")
+    # provider = settings.PRIMARY_LLM_PROVIDER
+    # model_attr = f"{provider.upper()}_MODEL_NAME"
+    # model = getattr(settings, model_attr, "N/A")
 
-    key_attr = f"{provider.upper()}_API_KEY"
-    key_set = bool(getattr(settings, key_attr, "")) if provider != "ollama" else True
+    # key_attr = f"{provider.upper()}_API_KEY"
+    # key_set = bool(getattr(settings, key_attr, "")) if provider != "ollama" else True
 
     print("=" * 70)
     print(f"  {settings.PROJECT_NAME}  v{settings.VERSION}")
